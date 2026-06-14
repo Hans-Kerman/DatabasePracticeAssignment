@@ -1,0 +1,13 @@
+[project]
+name = "library-backend"
+version = "0.1.0"
+description = "图书管理系统后端 (FastAPI + psycopg3，业务逻辑在DB层存储过程)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "psycopg[binary]>=3.2",
+    "psycopg-pool>=3.2",
+    "pyjwt>=2.9",
+    "python-dotenv>=1.0",
+]
