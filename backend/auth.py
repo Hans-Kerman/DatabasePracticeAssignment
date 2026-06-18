@@ -2,7 +2,6 @@ import time
 import jwt
 from fastapi import HTTPException, Header
 
-# 演示用，写死在代码里
 SECRET = "library-demo-secret-please-change"
 ADMIN_USER = "admin"
 ADMIN_PASS = "admin123"

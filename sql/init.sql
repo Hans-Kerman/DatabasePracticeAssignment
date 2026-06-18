@@ -1,13 +1,5 @@
--- =====================================================================
--- 图书管理系统 - 完整建表脚本 (PostgreSQL)
--- 9张表 + 索引 + 角色 + 4视图 + 4存储过程 + 4触发器
--- 依据 docs/3物理结构设计和系统实现.md 落地
--- 可重复执行：脚本顶部自动清理旧对象
--- =====================================================================
 
--- ---------------------------------------------------------------------
--- 0. 清理（保证可重复执行）
--- ---------------------------------------------------------------------
+-- 清理
 DROP VIEW IF EXISTS v_book_inventory, v_reader_borrowing, v_overdue_alert, v_book_reviews;
 
 DROP TRIGGER IF EXISTS trg_auto_penalty ON lend_record;
@@ -34,10 +26,6 @@ DROP TABLE IF EXISTS reader CASCADE;
 DROP TABLE IF EXISTS book_category CASCADE;
 DROP TABLE IF EXISTS category CASCADE;
 DROP TABLE IF EXISTS book CASCADE;
-
--- ---------------------------------------------------------------------
--- 1. 建表（按外键依赖顺序）
--- ---------------------------------------------------------------------
 
 -- 1.1 图书书目表 (SPU)
 CREATE TABLE book (
@@ -127,9 +115,7 @@ CREATE TABLE review (
     review_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- ---------------------------------------------------------------------
--- 2. 索引（物理设计：主键自带聚簇，此处补外键+高频查询索引）
--- ---------------------------------------------------------------------
+-- 2. 索引
 CREATE INDEX idx_lend_reader   ON lend_record(reader_id);
 CREATE INDEX idx_lend_copy     ON lend_record(copy_id);
 CREATE INDEX idx_copy_book     ON book_copy(book_id);
@@ -137,9 +123,7 @@ CREATE INDEX idx_book_title    ON book(title);
 CREATE INDEX idx_book_isbn     ON book(isbn);
 CREATE INDEX idx_reader_card   ON reader(card_number);
 
--- ---------------------------------------------------------------------
 -- 3. 安全性设计：角色与权限（RBAC）
--- ---------------------------------------------------------------------
 DO $$ BEGIN CREATE ROLE role_admin;  EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE ROLE role_reader; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
@@ -153,15 +137,12 @@ GRANT SELECT, INSERT ON review, reservation TO role_reader;
 -- 读者：评价/预约表的序列权限（SERIAL主键插入需要）
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO role_reader;
 
--- 示例用户（密码可在实际部署时修改）
 DO $$ BEGIN CREATE USER lib_admin1  WITH PASSWORD 'Admin@123'; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE USER stu_reader1 WITH PASSWORD 'Stu@123';   EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 GRANT role_admin  TO lib_admin1;
 GRANT role_reader TO stu_reader1;
 
--- ---------------------------------------------------------------------
 -- 4. 视图（4个）
--- ---------------------------------------------------------------------
 
 -- 4.1 综合图书库存
 CREATE VIEW v_book_inventory AS
@@ -219,9 +200,7 @@ FROM book b
 LEFT JOIN review r ON b.book_id = r.book_id
 GROUP BY b.book_id, b.title;
 
--- ---------------------------------------------------------------------
 -- 5. 存储过程（4个）
--- ---------------------------------------------------------------------
 
 -- 5.1 办理借书
 CREATE OR REPLACE PROCEDURE sp_borrow_book(p_reader_id INT, p_copy_id INT)
@@ -341,9 +320,7 @@ BEGIN
 END;
 $$;
 
--- ---------------------------------------------------------------------
 -- 6. 触发器（4个）
--- ---------------------------------------------------------------------
 
 -- 6.1 还书超期自动生成罚单 (0.5元/天)
 CREATE OR REPLACE FUNCTION trg_func_auto_penalty()
