@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
-from db import query
-from auth import admin_required
+from db import query, query_one
+from auth import admin_required, reader_required
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])
 
@@ -21,5 +21,14 @@ def overdue():
 
 
 @router.get("/borrowing")
-def borrowing():
+def borrowing(user=Depends(reader_required)):
+    if user["role"] == "reader":
+        # 读者只能看自己的在借明细
+        r = query_one("SELECT card_number FROM reader WHERE reader_id=%s", [int(user["sub"])])
+        if r:
+            return query(
+                "SELECT * FROM v_reader_borrowing WHERE card_number=%s ORDER BY due_date",
+                [r["card_number"]],
+            )
+        return []
     return query("SELECT * FROM v_reader_borrowing ORDER BY due_date")
