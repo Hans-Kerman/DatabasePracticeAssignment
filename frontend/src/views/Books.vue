@@ -35,6 +35,14 @@
           <el-table-column prop="location" label="位置" />
           <el-table-column prop="status" label="状态" width="100" />
         </el-table>
+        <template v-if="auth.isAdmin">
+          <el-divider />
+          <el-form inline>
+            <el-form-item label="数量"><el-input-number v-model="addCopies.count" :min="1" :max="100" /></el-form-item>
+            <el-form-item label="位置"><el-input v-model="addCopies.location" style="width: 120px" /></el-form-item>
+            <el-button type="primary" @click="submitAddCopies(detail.book.book_id)">批量入库</el-button>
+          </el-form>
+        </template>
         <h4>评价</h4>
         <el-table :data="detail.book.reviews" size="small" border>
           <el-table-column prop="reader_name" label="读者" width="100" />
@@ -125,6 +133,13 @@ async function submitAdd() {
   ElMessage.success('已新增')
   add.show = false
   await load()
+}
+
+const addCopies = reactive({ count: 1, location: '' })
+async function submitAddCopies(bookId: number) {
+  await http.post(`/api/books/${bookId}/copies`, { count: addCopies.count, location: addCopies.location })
+  ElMessage.success('已入库')
+  await openDetail(bookId)
 }
 
 onMounted(async () => {
