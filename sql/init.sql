@@ -150,6 +150,8 @@ GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO role_admin;
 GRANT SELECT ON book, category, book_category, book_copy TO role_reader;
 -- 读者：评价/预约可读可写
 GRANT SELECT, INSERT ON review, reservation TO role_reader;
+-- 读者：评价/预约表的序列权限（SERIAL主键插入需要）
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO role_reader;
 
 -- 示例用户（密码可在实际部署时修改）
 DO $$ BEGIN CREATE USER lib_admin1  WITH PASSWORD 'Admin@123'; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
@@ -430,5 +432,118 @@ FOR EACH ROW
 EXECUTE FUNCTION trg_func_check_review_auth();
 
 -- =====================================================================
+-- 演示数据（演示场景：逾期还书触发罚单、预约排队、评价等）
+-- 日期全部用 CURRENT_DATE 相对偏移，任何时间执行均等价
+-- =====================================================================
+
+-- 1. 分类
+INSERT INTO category (category_id, name, description) VALUES
+    (1, '计算机科学', '计算机与信息技术类'),
+    (2, '文学',       '中外文学名著'),
+    (3, '历史',       '历史与人文');
+SELECT setval(pg_get_serial_sequence('category','category_id'), 3, true);
+
+-- 2. 书目
+INSERT INTO book (book_id, isbn, title, author, publisher, pub_date, price) VALUES
+    (1, '9787111407010', '深入理解计算机系统', 'Randal E. Bryant', '机械工业出版社', '2016-11-01', 139.00),
+    (2, '9787020002207', '红楼梦',             '曹雪芹',           '人民文学出版社', '1982-01-01', 59.70),
+    (3, '9787108009235', '万历十五年',         '黄仁宇',           '三联书店',       '1997-05-01', 38.00),
+    (4, '9787040406641', '数据库系统概论',     '王珊 萨师煊',       '高等教育出版社', '2014-09-01', 45.00);
+SELECT setval(pg_get_serial_sequence('book','book_id'), 4, true);
+
+-- 3. 书目-分类映射
+INSERT INTO book_category (book_id, category_id) VALUES
+    (1, 1), (2, 2), (3, 3), (4, 1);
+
+-- 4. 读者
+INSERT INTO reader (reader_id, name, card_number, phone, valid_until, status) VALUES
+    (1, '张三', 'R2026001', '13800000001', '2028-12-31', '正常'),
+    (2, '李四', 'R2026002', '13800000002', '2028-12-31', '正常'),
+    (3, '王五', 'R2026003', '13800000003', '2028-12-31', '注销'),
+    (4, '赵六', 'R2026004', '13800000004', '2028-12-31', '正常'),
+    (5, '刘七', 'R2026005', '13800000005', '2028-12-31', '正常'),
+    (6, '周八', 'R2026006', '13800000006', '2028-12-31', '正常');
+    -- 周八：有一笔未缴罚单→触发 trg_freeze_reader 冻结；状态在 INSERT penalty 后变'冻结'
+SELECT setval(pg_get_serial_sequence('reader','reader_id'), 6, true);
+
+-- 5. 馆藏单册
+INSERT INTO book_copy (copy_id, book_id, location, status) VALUES
+    (1, 1, 'A-1-01', '在馆'),
+    (2, 1, 'A-1-02', '在馆'),
+    (3, 2, 'B-2-01', '在馆'),
+    (4, 2, 'B-2-02', '在馆'),
+    (5, 3, 'C-3-01', '在馆'),
+    (6, 4, 'A-1-03', '在馆'),
+    (7, 4, 'A-1-04', '在馆'),
+    (8, 4, 'A-1-05', '在馆'),
+    -- 追加单册：大部分在馆可供借阅
+    (9,  1, 'A-1-06', '在馆'),
+    (10, 1, 'A-1-07', '在馆'),
+    (11, 2, 'B-2-03', '在馆'),
+    (12, 2, 'B-2-04', '在馆'),
+    (13, 3, 'C-3-02', '在馆'),
+    (14, 4, 'A-1-08', '在馆');
+SELECT setval(pg_get_serial_sequence('book_copy','copy_id'), 14, true);
+
+-- 6. 借阅记录（直接 INSERT 注入历史数据，绕过 sp_borrow_book）
+--    赵六5条活跃记录排最前，避免 trg_check_borrow_limit 误拦
+INSERT INTO lend_record (lend_id, reader_id, copy_id, borrow_date, due_date, return_date, renew_count) VALUES
+    -- 赵六：在借5本(达到上限，触发借阅量限制演示)；copy2 逾期45天
+    (5, 4, 2, CURRENT_DATE - 75, CURRENT_DATE - 45, NULL,         0),
+    (7, 4, 4, CURRENT_DATE - 20, CURRENT_DATE + 10, NULL,         0),
+    (8, 4, 7, CURRENT_DATE - 15, CURRENT_DATE + 15, NULL,         0),
+    (9, 4, 5, CURRENT_DATE - 12, CURRENT_DATE + 18, NULL,         0),
+    (10,4, 3, CURRENT_DATE - 8,  CURRENT_DATE + 22, NULL,         0),
+    -- 张三：在借2本；copy1 已逾期10天(用于还书触发罚单+逾期预警视图)
+    (1, 1, 1, CURRENT_DATE - 40, CURRENT_DATE - 10, NULL,         0),
+    (2, 1, 6, CURRENT_DATE - 5,  CURRENT_DATE + 25, NULL,         0),
+    -- 李四：在借1本；copy3 正常借阅
+    (3, 2, 3, CURRENT_DATE - 10, CURRENT_DATE + 20, NULL,         0),
+    -- 王五：历史已归还(注销前的记录)
+    (4, 3, 5, CURRENT_DATE - 60, CURRENT_DATE - 30, CURRENT_DATE - 35, 0),
+    -- 刘七：历史已归还
+    (6, 5, 1, CURRENT_DATE - 50, CURRENT_DATE - 20, CURRENT_DATE - 22, 0),
+    -- 周八：在借1本，逾期20天(未缴罚单→触发冻结)
+    (11, 6, 8, CURRENT_DATE - 50, CURRENT_DATE - 20, NULL,         0);
+SELECT setval(pg_get_serial_sequence('lend_record','lend_id'), 11, true);
+
+-- 同步在借单册状态
+UPDATE book_copy SET status = '已借出' WHERE copy_id IN (1, 2, 3, 4, 5, 6, 7, 8);
+
+-- 7. 预约（book1 全部 copy 均已借出，李四排队等待）
+INSERT INTO reservation (reader_id, book_id, status) VALUES
+    (2, 1, '排队中');
+
+-- 8. 罚单
+--    王五(已注销)：已缴清历史罚单，INSERT 不触发冻结(因 status='已缴清')
+--    周八：未缴罚单，INSERT 触发 trg_freeze_reader 冻结周八
+INSERT INTO penalty (lend_id, reader_id, amount, status, pay_time) VALUES
+    (4, 3, 2.50, '已缴清', CURRENT_TIMESTAMP - INTERVAL '33 days'),
+    (11, 6, 10.00, '未缴清', NULL);
+
+-- 9. 评价（仅对借阅过的组合插入，触发器校验通过）
+INSERT INTO review (reader_id, book_id, score, content) VALUES
+    (2, 2, 5, '常读常新，千古第一奇书。'),
+    (3, 3, 4, '大历史观独特，值得一读。'),
+    (5, 1, 4, '经典CSAPP，英文原版更好但中文版也不错。'),
+    (6, 4, 3, '数据库原理讲得清楚，但练习偏少。');
+
+-- =====================================================================
 -- 初始化完成
+--
+-- 演示场景：
+--  ① 库存查询   → SELECT * FROM v_book_inventory;
+--  ② 逾期预警   → SELECT * FROM v_overdue_alert;
+--                  (张三copy1逾期10天、赵六copy2逾期45天、周八copy8逾期20天)
+--  ③ 在借明细   → SELECT * FROM v_reader_borrowing;
+--  ④ 还书触发罚单 → CALL sp_return_book(1);  -- 张三copy1逾期→自动生成罚单
+--                  → CALL sp_return_book(5);  -- 赵六copy2逾期→自动生成罚单→自动冻结读者
+--  ⑤ 罚单清缴解冻 → SELECT * FROM penalty;   -- 查看罚单
+--                  → CALL sp_pay_penalty(<penalty_id>);  -- 缴清后自动解冻
+--  ⑥ 评价统计   → SELECT * FROM v_book_reviews;
+--  ⑦ 评价校验   → INSERT INTO review(...) -- 借过的可以，没借过的报错
+--  ⑧ 借阅量上限  → 触发器 trg_check_borrow_limit 限制每人最多5本
+-- 读者状态：张三/李四/刘七 正常；赵六 在借5本(上限)；周八 冻结(未缴罚单)；王五 注销
+-- 逾期：张三copy1逾期10天、赵六copy2逾期45天、周八copy8逾期20天
+-- 预约：李四排队等待 book1
 -- =====================================================================
